@@ -137,6 +137,7 @@ For background on post-FIPS configuration requirements, see [FIPS-CC Security Fu
 
 - **GCP support** (`gcp_fips_enable.py`) — `gcp-user` SSH key auth for MRT access
 - **Azure support** (`azure_fips_enable.py`) — deployment credential handling; SSH key required pre-FIPS (Azure password auth does not survive the FIPS factory reset)
+- **Hardware NGFW support** (`hw_fips_enable.py`) — MRT is accessible via SSH to the management IP using `maint` as the username and the firewall serial number as the password; no cloud-specific credential handling required
 
 ---
 
