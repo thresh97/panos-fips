@@ -135,9 +135,14 @@ For background on post-FIPS configuration requirements, see [FIPS-CC Security Fu
 
 ## Planned
 
-- **GCP support** (`gcp_fips_enable.py`) — `gcp-user` SSH key auth for MRT access
-- **Azure support** (`azure_fips_enable.py`) — deployment credential handling; SSH key required pre-FIPS (Azure password auth does not survive the FIPS factory reset)
-- **Hardware NGFW support** (`hw_fips_enable.py`) — MRT is accessible via SSH to the management IP using `maint` as the username and the firewall serial number as the password; no cloud-specific credential handling required
+The MRT credential model is determined by where the device is running, not whether it is a firewall or Panorama. The planned scripts cover both form factors accordingly.
+
+| Script | Covers |
+|---|---|
+| `aws_fips_enable.py` *(current)* | VM-Series on AWS, Panorama virtual on AWS |
+| `gcp_fips_enable.py` | VM-Series on GCP, Panorama virtual on GCP — `gcp-user` + SSH key for MRT |
+| `azure_fips_enable.py` | VM-Series on Azure, Panorama virtual on Azure — deployment credential handling; SSH key required pre-FIPS (Azure password auth does not survive the factory reset) |
+| `hw_fips_enable.py` | Hardware NGFW, M-Series Panorama, Panorama virtual on VMware/KVM — MRT SSH uses `maint` as username and the device serial number as password |
 
 ---
 
