@@ -86,7 +86,7 @@ pip install -r requirements.txt
 
 **MRT phase (Phases 2–3):** SSH as `ec2-user` using the same SSH key. This is hardcoded by AWS — the MRT grants access via the SSH key associated with the instance at launch.
 
-**Post-FIPS phase (Phase 4):** SSH as `admin` with the post-factory-reset default password `paloalto`. Key-based auth is attempted first, then password fallback.
+**Post-FIPS phase (Phase 4):** SSH as `admin` with password `paloalto` (the post-factory-reset default). Key-based auth is not possible here — AWS cloud-init does not re-inject SSH keys after a factory reset, so the `authorized_keys` file is gone.
 
 ### Arguments
 

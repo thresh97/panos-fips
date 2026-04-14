@@ -568,11 +568,13 @@ def phase_send_reboot_from_mrt(ip: str, key_path: Path, state: dict,
 # ---------------------------------------------------------------------------
 
 
-def phase_wait_for_post_fips(ip: str, key_path: Path | None, state: dict,
-                              state_dir: Path) -> bool:
+def phase_wait_for_post_fips(ip: str, state: dict, state_dir: Path) -> bool:
     """
     Poll until the firewall is reachable after the FIPS-CC factory reset.
-    Try key-based auth first, then password (admin/paloalto).
+
+    After a factory reset the firewall has no SSH authorized_keys — AWS
+    cloud-init does not re-inject them. Password auth (admin/paloalto) is
+    the only option here.
     """
     LOGGER.info("Phase 4: Waiting for firewall to boot in FIPS-CC mode")
     LOGGER.info("Post-FIPS default credentials: %s / %s", POST_FIPS_USER, POST_FIPS_PASSWORD)
@@ -591,27 +593,22 @@ def phase_wait_for_post_fips(ip: str, key_path: Path | None, state: dict,
         LOGGER.info("Post-FIPS reconnect attempt %d (%.0fs remaining)...",
                     attempt, deadline - time.time())
 
-        # Try key auth first (may work on AWS even post-FIPS), then password
-        for auth_kwargs in [
-            {"key_path": key_path, "password": None},
-            {"key_path": None, "password": POST_FIPS_PASSWORD},
-        ]:
-            ssh = FirewallSSHClient(ip, POST_FIPS_USER, **auth_kwargs)
-            if ssh.try_connect():
-                LOGGER.info("Post-FIPS firewall is reachable (auth: %s)",
-                            "key" if auth_kwargs["key_path"] else "password")
-                try:
-                    out, _ = ssh.run_command(
-                        "show system info | match operational-mode", timeout=15)
-                    LOGGER.info("Operational mode: %s", out.strip() or "unknown")
-                except Exception:
-                    pass
-                finally:
-                    ssh.close()
+        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=None,
+                                password=POST_FIPS_PASSWORD)
+        if ssh.try_connect():
+            LOGGER.info("Post-FIPS firewall is reachable")
+            try:
+                out, _ = ssh.run_command(
+                    "show system info | match operational-mode", timeout=15)
+                LOGGER.info("Operational mode: %s", out.strip() or "unknown")
+            except Exception:
+                pass
+            finally:
+                ssh.close()
 
-                state["status"] = STATE_DONE
-                save_state(state, state_dir)
-                return True
+            state["status"] = STATE_DONE
+            save_state(state, state_dir)
+            return True
 
         time.sleep(POST_REBOOT_INTERVAL)
 
@@ -654,16 +651,13 @@ def detect_state(ip: str, key_path: Path, admin_user: str, admin_password: str |
     # For FIPS-selected/complete states, check if MRT is still up or if
     # the firewall has already booted into FIPS-CC mode
     if saved in (STATE_FIPS_SELECTED, STATE_FIPS_COMPLETE, STATE_REBOOTING):
-        # Try post-FIPS credentials first — if the firewall booted we're done
-        for auth_kwargs in [
-            {"key_path": key_path, "password": None},
-            {"key_path": None, "password": POST_FIPS_PASSWORD},
-        ]:
-            ssh = FirewallSSHClient(ip, POST_FIPS_USER, **auth_kwargs)
-            if ssh.try_connect():
-                ssh.close()
-                LOGGER.info("Post-FIPS firewall is up — marking DONE")
-                return STATE_DONE
+        # Post-FIPS uses password only — factory reset wipes authorized_keys
+        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=None,
+                                password=POST_FIPS_PASSWORD)
+        if ssh.try_connect():
+            ssh.close()
+            LOGGER.info("Post-FIPS firewall is up — marking DONE")
+            return STATE_DONE
 
         # MRT may still be running
         ssh = FirewallSSHClient(ip, MRT_USER, key_path)
@@ -760,7 +754,7 @@ def enable_fips(ip: str, key_path: Path | None, admin_user: str,
     # Phase 4: Wait for post-FIPS boot
     # ------------------------------------------------------------------
     if status == STATE_REBOOTING:
-        if not phase_wait_for_post_fips(ip, key_path, state, state_dir):
+        if not phase_wait_for_post_fips(ip, state, state_dir):
             return False
 
     LOGGER.info("=" * 60)
@@ -784,9 +778,10 @@ def main():
 Examples:
   python aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
   python aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --debug
-  python aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --admin-password secret
 
-The admin SSH password can also be set via the NGFW_ADMIN_PASSWORD environment variable.
+The admin SSH password (Phase 1 only) can be set via the NGFW_ADMIN_PASSWORD
+environment variable if needed. Phases 2-3 use the SSH key (ec2-user). Phase 4
+uses admin/paloalto password — SSH keys are not re-injected after factory reset.
 
 WARNING: Enabling FIPS-CC mode performs a full factory reset.
          All configuration and credentials are erased and cannot be retrieved.
