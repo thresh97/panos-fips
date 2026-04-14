@@ -1,6 +1,6 @@
-# VM-Series NGFW Init
+# PAN-OS FIPS-CC Enablement
 
-> **This script does not deploy the firewall.** It assumes the VM-Series firewall is already running and reachable at the IP address you provide.
+> **These scripts do not deploy the firewall or Panorama.** They assume the device is already running and reachable at the IP address you provide.
 
 A Python CLI tool for enabling FIPS-CC mode on Palo Alto Networks VM-Series firewalls deployed in the public cloud. Currently supports AWS, with GCP and Azure planned.
 
