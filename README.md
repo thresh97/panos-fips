@@ -155,6 +155,30 @@ python3 aws_fips_enable.py "$MGMT_IP" --ssh-key ~/.ssh/my-key.pem
 
 ---
 
+## Deploying a Target Instance (Azure)
+
+```bash
+# Deploy a VM-Series instance
+cd vmseries-custom/azure
+python3 azure_create_infra.py create \
+  --region eastus \
+  --name-tag pa-fw-fips-test \
+  --license-type byol \
+  --ssh-key-file ~/.ssh/id_rsa.pub \
+  --allowed-ips 203.0.113.0/32
+
+# Extract the management IP from the state file
+MGMT_IP=$(jq -r '.management_public_ip' ./*-state.json)
+
+# Enable FIPS-CC
+cd ../../panos-fips
+python3 azure_fips_enable.py "$MGMT_IP"
+```
+
+If the VM was deployed with a password in addition to the SSH key, pass it via `--mrt-password` for MRT access (Phases 2-3).
+
+---
+
 ## Planned
 
 The MRT credential model is determined by where the device is running, not whether it is a firewall or Panorama. The planned scripts cover both form factors accordingly.
