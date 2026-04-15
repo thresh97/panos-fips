@@ -508,7 +508,7 @@ def phase_wait_for_mrt(ip: str, state: dict,
 
         ssh = _mrt_ssh_client(ip, state["serial"])
         if ssh.try_connect():
-            LOGGER.info("SSH connected as %s — verifying MRT interface", admin_user)
+            LOGGER.info("SSH connected as %s — verifying MRT interface", MRT_USER)
             chan = ssh.invoke_shell()
             screen = MRTScreen()
             nav = MRTNavigator(chan, screen)
