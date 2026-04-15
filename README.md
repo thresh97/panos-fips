@@ -162,8 +162,8 @@ The MRT credential model is determined by where the device is running, not wheth
 | Script | Covers |
 |---|---|
 | `aws_fips_enable.py` *(current)* | VM-Series on AWS, Panorama virtual on AWS |
+| `azure_fips_enable.py` *(current)* | VM-Series on Azure, Panorama virtual on Azure — MRT uses deployment credentials (`--mrt-password` or SSH key); SSH key required pre-FIPS (password auth does not survive factory reset) |
 | `gcp_fips_enable.py` | VM-Series on GCP, Panorama virtual on GCP — `gcp-user` + SSH key for MRT |
-| `azure_fips_enable.py` | VM-Series on Azure, Panorama virtual on Azure — deployment credential handling; SSH key required pre-FIPS (Azure password auth does not survive the factory reset) |
 | `hw_fips_enable.py` | Hardware NGFW, M-Series Panorama, Panorama virtual on VMware/KVM — MRT SSH uses `maint` as username and the device serial number as password |
 
 **TODO:** Add FIPS-CC enablement as an optional post-upgrade step in [vmseries-custom](https://github.com/thresh97/vmseries-custom)'s `create-custom-ami` workflow. This would allow building a golden AMI at a specific PAN-OS version (not available in the Marketplace) with FIPS-CC mode already enabled — deploy → upgrade PAN-OS → enable FIPS-CC → capture AMI.
