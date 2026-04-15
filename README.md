@@ -133,6 +133,30 @@ For background on post-FIPS configuration requirements, see [FIPS-CC Security Fu
 
 ---
 
+## Deploying a Target Instance (AWS)
+
+If you need a fresh VM-Series instance to enable FIPS-CC on, [vmseries-custom](https://github.com/thresh97/vmseries-custom) can deploy one and hand off directly to this script.
+
+```bash
+# Deploy a VM-Series instance
+cd vmseries-custom/aws
+python3 aws_create_infra.py create \
+  --region us-east-1 \
+  --name-tag pa-fw-fips-test \
+  --license-type byol \
+  --ssh-key-file ~/.ssh/my-key.pub \
+  --allowed-ips 203.0.113.0/32
+
+# Extract the management IP from the state file
+MGMT_IP=$(jq -r '.eip_public_ip' ./*-state.json)
+
+# Enable FIPS-CC
+cd ../../panos-fips
+python3 aws_fips_enable.py "$MGMT_IP" --ssh-key ~/.ssh/my-key.pem
+```
+
+---
+
 ## Planned
 
 The MRT credential model is determined by where the device is running, not whether it is a firewall or Panorama. The planned scripts cover both form factors accordingly.
