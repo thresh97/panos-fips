@@ -484,10 +484,12 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
 
 
 def phase_wait_for_mrt(ip: str, state: dict,
-                       state_dir: Path) -> paramiko.Channel | None:
+                       state_dir: Path) -> tuple[paramiko.Channel, MRTScreen] | None:
     """
-    Poll until the MRT is reachable via SSH as 'maint' + deployment password.
-    Returns an open shell channel into the MRT, or None on timeout.
+    Poll until the MRT is reachable via SSH as 'maint' + serial number.
+    Returns (channel, screen) so the initial render is not discarded —
+    phase_enable_fips_in_mrt reuses the screen rather than draining a
+    now-empty channel.
     """
     LOGGER.info("Phase 2: Waiting for MRT on %s (initial wait ~%ds)", ip,
                 MRT_TRIGGER_INITIAL_WAIT)
@@ -518,7 +520,7 @@ def phase_wait_for_mrt(ip: str, state: dict,
                 LOGGER.info("MRT interface confirmed.")
                 state["status"] = STATE_MRT_READY
                 save_state(state, state_dir)
-                return chan
+                return chan, screen
 
             LOGGER.debug("Connected but MRT not confirmed. Screen:%s", screen.dump())
             try:
@@ -538,17 +540,31 @@ def phase_wait_for_mrt(ip: str, state: dict,
 # ---------------------------------------------------------------------------
 
 
-def phase_enable_fips_in_mrt(chan: paramiko.Channel, state: dict,
-                              state_dir: Path) -> bool:
+def phase_enable_fips_in_mrt(chan: paramiko.Channel, screen: MRTScreen,
+                              state: dict, state_dir: Path) -> bool:
     """
     Navigate the MRT TUI to enable FIPS-CC mode and wait for the factory reset
     to complete. Updates state throughout so a restart can re-enter mid-phase.
+
+    `screen` is passed in from phase_wait_for_mrt so the initial render is
+    not lost — the MRT only sends the welcome screen once on connect.
     """
     LOGGER.info("Phase 3: Navigating MRT to enable FIPS-CC mode")
 
-    screen = MRTScreen()
     nav = MRTNavigator(chan, screen)
-    nav._drain(settle=2.0)
+
+    # If the initial render was already captured in phase_wait_for_mrt the
+    # screen will have content. If blank (e.g. resumed from state), send a
+    # key to force the TUI to re-render.
+    if screen.contains(MRT_TEXT_CONTINUE) or screen.contains("Maintenance"):
+        LOGGER.debug("Using MRT screen data from Phase 2.")
+    else:
+        nav._drain(settle=2.0)
+        if not (screen.contains(MRT_TEXT_CONTINUE) or screen.contains("Maintenance")):
+            LOGGER.debug("Screen blank — sending key to trigger MRT redraw")
+            chan.send(KEY_DOWN)
+            nav._drain(settle=2.0)
+
     LOGGER.debug("Initial MRT screen:%s", screen.dump())
 
     # --- Welcome screen: press Enter on "Continue" ---
@@ -826,10 +842,12 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
     # Phase 2: Wait for MRT SSH
     # ------------------------------------------------------------------
     chan = None
+    mrt_screen = None
     if status == STATE_MRT_TRIGGERED:
-        chan = phase_wait_for_mrt(ip, state, state_dir)
-        if chan is None:
+        result = phase_wait_for_mrt(ip, state, state_dir)
+        if result is None:
             return False
+        chan, mrt_screen = result
         status = state["status"]
 
     # ------------------------------------------------------------------
@@ -837,13 +855,15 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
     # ------------------------------------------------------------------
     if status == STATE_MRT_READY:
         if chan is None:
+            # Reconnect if we resumed into this state — fresh screen
             ssh = _mrt_ssh_client(ip, state["serial"])
             if not ssh.connect(max_retries=5, delay=10):
                 LOGGER.error("Cannot reconnect to MRT at %s", ip)
                 return False
             chan = ssh.invoke_shell()
+            mrt_screen = MRTScreen()
 
-        success = phase_enable_fips_in_mrt(chan, state, state_dir)
+        success = phase_enable_fips_in_mrt(chan, mrt_screen or MRTScreen(), state, state_dir)
         try:
             chan.close()
         except Exception:
