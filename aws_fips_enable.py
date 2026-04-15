@@ -394,22 +394,30 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
         return False
 
     try:
-        # Use exec_command with PTY so PAN-OS treats this as an interactive
-        # session — without a PTY it may refuse the command entirely.
+        # PAN-OS SSH ignores exec_command arguments and always opens the CLI
+        # shell — invoke_shell() is the correct approach. It allocates a PTY
+        # by default, which is what PAN-OS requires for interactive commands.
+        chan = ssh.invoke_shell()
+
+        # Wait for the CLI prompt before sending the command
+        if not _wait_for_in_channel(chan, ">", timeout=30):
+            LOGGER.warning("Did not see CLI prompt — sending command anyway")
+
         LOGGER.info("Sending: debug system maintenance-mode")
-        stdin, chan = ssh.exec_with_pty("debug system maintenance-mode")
+        LOGGER.debug("send: debug system maintenance-mode")
+        chan.send("debug system maintenance-mode\n")
 
         # PAN-OS prompts: "Do you want to continue? (y or n)"
         if not _wait_for_in_channel(chan, "y or n", timeout=15):
             LOGGER.warning("Did not see confirmation prompt — sending y anyway")
         LOGGER.debug("send: y")
-        stdin.write("y\n")
-        stdin.flush()
+        chan.send("y\n")
 
+        # Let the server close the connection as the reboot starts
+        _wait_for_channel_close(chan, timeout=30)
         LOGGER.info("Maintenance mode triggered. Firewall will reboot in ~2-3 minutes.")
     except Exception as exc:
-        # SSH session dropping is expected once the reboot starts
-        LOGGER.debug("SSH session ended (expected): %s", exc)
+        LOGGER.debug("SSH session ended (expected during reboot): %s", exc)
     finally:
         ssh.close()
 
