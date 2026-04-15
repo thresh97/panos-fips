@@ -88,7 +88,7 @@ pip install -r requirements.txt
 
 **Post-FIPS phase (Phase 4):** SSH as `admin` using the instance SSH key. AWS re-injects the key at boot even after a factory reset, so key auth works. Password auth (`admin`/`paloalto`) does not work on this platform.
 
-**Password change (Phase 5):** Connects via SSH key, enters configure mode, sets `--new-password`, and commits. If `--new-password` is omitted a secure random password is generated. The final password is saved in the state file and printed on completion.
+The firewall is left in a factory-default, unlicensed state — the correct state for quiescing and capturing a custom AMI via [vmseries-custom](https://github.com/thresh97/vmseries-custom).
 
 ### Arguments
 
@@ -98,18 +98,14 @@ pip install -r requirements.txt
 | `--ssh-key` | *(required)* | Path to SSH private key (`.pem`) associated with the EC2 instance |
 | `--admin-user` | `admin` | Admin username for the initial SSH session |
 | `--admin-password` | *(env: `NGFW_ADMIN_PASSWORD`)* | Admin password if not using key auth for Phase 1 |
-| `--new-password` | *(generated)* | New admin password to set after FIPS-CC mode is enabled |
 | `--state-dir` | `.` | Directory for state files |
 | `--debug` | `false` | Verbose logging with full screen dumps at each MRT navigation step |
 
 ### Examples
 
 ```bash
-# Basic usage — generates and prints a random admin password on completion
+# Basic usage
 python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
-
-# Set a specific admin password
-python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --new-password 'MyP@ssw0rd!'
 
 # With debug output (recommended for first run — shows full MRT screen at each step)
 python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --debug
@@ -125,10 +121,9 @@ The script is fully idempotent. Re-running the same command on a firewall that i
 
 ## After Enabling FIPS-CC Mode
 
-Once the script completes, the firewall is running in FIPS-CC mode with:
+Once the script completes, the firewall is running in FIPS-CC mode in a factory-default, unlicensed state. This is the correct state for capturing a custom AMI — use `vmseries-custom create-ami` to snapshot it.
 
-- **All configuration erased.** Re-bootstrap via Panorama, bootstrap package, or manual configuration.
-- **Admin password changed** to the value of `--new-password` (or the generated password printed on completion). The default `paloalto` credential is no longer active.
+- **All configuration erased.** Re-bootstrap via Panorama, bootstrap package, or manual configuration after deploying from the AMI.
 - **FIPS-CC displayed** in the status bar of the web interface at all times.
 - **HA must be re-enabled manually** if the firewall was part of an HA pair before the mode change. HA1 control link encryption is required in FIPS-CC mode.
 
@@ -170,6 +165,8 @@ The MRT credential model is determined by where the device is running, not wheth
 | `gcp_fips_enable.py` | VM-Series on GCP, Panorama virtual on GCP — `gcp-user` + SSH key for MRT |
 | `azure_fips_enable.py` | VM-Series on Azure, Panorama virtual on Azure — deployment credential handling; SSH key required pre-FIPS (Azure password auth does not survive the factory reset) |
 | `hw_fips_enable.py` | Hardware NGFW, M-Series Panorama, Panorama virtual on VMware/KVM — MRT SSH uses `maint` as username and the device serial number as password |
+
+**TODO:** Add FIPS-CC enablement as an optional post-upgrade step in [vmseries-custom](https://github.com/thresh97/vmseries-custom)'s `create-custom-ami` workflow. This would allow building a golden AMI at a specific PAN-OS version (not available in the Marketplace) with FIPS-CC mode already enabled — deploy → upgrade PAN-OS → enable FIPS-CC → capture AMI.
 
 ---
 

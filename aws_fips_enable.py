@@ -7,11 +7,17 @@ Workflow:
   2. Wait for the MRT to become accessible via SSH (ec2-user + SSH key).
   3. Navigate the MRT curses interface to enable FIPS-CC mode.
   4. Wait for factory reset to complete, then send Reboot.
-  5. Wait for the post-FIPS firewall to boot (default: admin/paloalto).
-  6. Change the admin password and commit.
+  5. Wait for the post-FIPS firewall to boot.
+
+The firewall is left in a factory-default, unlicensed state — ideal for
+quiescing and capturing a custom AMI via vmseries-custom create-custom-ami.
+
+# TODO: Add FIPS-CC enablement as an optional post-upgrade step in
+# vmseries-custom's create-custom-ami workflow, so a specific PAN-OS version
+# not available in the Marketplace can be built into a FIPS-CC golden image.
 
 WARNING: Enabling FIPS-CC mode performs a full factory reset. All configuration
-         and credentials are erased. Re-bootstrap the firewall afterwards.
+         and credentials are erased.
 
 State is persisted in a JSON file so the script can be safely restarted if it
 is interrupted at any point.
@@ -21,8 +27,6 @@ import argparse
 import json
 import logging
 import os
-import secrets
-import string
 import sys
 import time
 from pathlib import Path
@@ -40,9 +44,8 @@ SCREEN_HEIGHT = 24
 # MRT SSH username for AWS
 MRT_USER = "ec2-user"
 
-# Post-FIPS default credentials (PAN-OS resets these on factory reset)
+# Admin username post-FIPS (AWS re-injects the SSH key; password auth does not work)
 POST_FIPS_USER = "admin"
-POST_FIPS_PASSWORD = "paloalto"
 
 # State machine values
 STATE_NOT_STARTED = "not_started"
@@ -51,7 +54,6 @@ STATE_MRT_READY = "mrt_ready"
 STATE_FIPS_SELECTED = "fips_selected"
 STATE_FIPS_COMPLETE = "fips_complete"
 STATE_REBOOTING = "rebooting"
-STATE_POST_FIPS_UP = "post_fips_up"
 STATE_DONE = "done"
 
 # Timing (seconds)
@@ -287,17 +289,6 @@ class MRTNavigator:
     def press_enter(self, settle: float = SCREEN_SETTLE):
         self.chan.send(KEY_ENTER)
         self._drain(settle=settle)
-
-
-# ---------------------------------------------------------------------------
-# Password helpers
-# ---------------------------------------------------------------------------
-
-
-def generate_password(length: int = 16) -> str:
-    """Generate a secure random alphanumeric password."""
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def _wait_for_channel_close(chan: paramiko.Channel, timeout: int = 60):
@@ -684,7 +675,7 @@ def phase_wait_for_post_fips(ip: str, key_path: Path, state: dict,
             finally:
                 ssh.close()
 
-            state["status"] = STATE_POST_FIPS_UP
+            state["status"] = STATE_DONE
             save_state(state, state_dir)
             return True
 
@@ -693,68 +684,6 @@ def phase_wait_for_post_fips(ip: str, key_path: Path, state: dict,
     LOGGER.error("Firewall did not come up after FIPS mode change within %ds",
                  POST_REBOOT_TIMEOUT)
     return False
-
-
-# ---------------------------------------------------------------------------
-# Phase 5: Set admin password
-# ---------------------------------------------------------------------------
-
-
-def phase_set_admin_password(ip: str, key_path: Path, new_password: str,
-                              state: dict, state_dir: Path) -> bool:
-    """
-    SSH as admin using the instance SSH key and set new_password via
-    configure mode. Saves the new password to state.
-    """
-    LOGGER.info("Phase 5: Setting new admin password")
-
-    ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
-    if not ssh.connect(max_retries=5, delay=10):
-        LOGGER.error("Cannot connect to firewall to change admin password")
-        return False
-
-    try:
-        chan = ssh.invoke_shell()
-
-        if not _wait_for_in_channel(chan, ">", timeout=30):
-            raise RuntimeError("Did not reach CLI prompt")
-
-        LOGGER.debug("send: configure")
-        chan.send("configure\n")
-        if not _wait_for_in_channel(chan, "#", timeout=30):
-            raise RuntimeError("Did not enter configure mode")
-
-        LOGGER.debug("send: set mgt-config users admin password")
-        chan.send("set mgt-config users admin password\n")
-        if not _wait_for_in_channel(chan, "Enter password", timeout=30):
-            raise RuntimeError("Did not see 'Enter password' prompt")
-
-        LOGGER.debug("send: <password>")
-        chan.send(new_password + "\n")
-        if not _wait_for_in_channel(chan, "Confirm password", timeout=30):
-            raise RuntimeError("Did not see 'Confirm password' prompt")
-
-        LOGGER.debug("send: <password>")
-        chan.send(new_password + "\n")
-        if not _wait_for_in_channel(chan, "#", timeout=30):
-            raise RuntimeError("Did not return to config prompt after password entry")
-
-        LOGGER.debug("send: commit")
-        chan.send("commit\n")
-        if not _wait_for_in_channel(chan, "committed successfully", timeout=120):
-            raise RuntimeError("Commit did not complete successfully")
-
-    except Exception as exc:
-        LOGGER.error("Failed to set admin password: %s", exc)
-        return False
-    finally:
-        ssh.close()
-
-    state["admin_password"] = new_password
-    state["status"] = STATE_DONE
-    save_state(state, state_dir)
-    LOGGER.info("Admin password changed and committed.")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -795,8 +724,8 @@ def detect_state(ip: str, key_path: Path, admin_user: str, admin_password: str |
         ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
         if ssh.try_connect():
             ssh.close()
-            LOGGER.info("Post-FIPS firewall is up — resuming at POST_FIPS_UP")
-            return STATE_POST_FIPS_UP
+            LOGGER.info("Post-FIPS firewall is up — marking DONE")
+            return STATE_DONE
 
         # MRT may still be running
         ssh = FirewallSSHClient(ip, MRT_USER, key_path)
@@ -808,18 +737,6 @@ def detect_state(ip: str, key_path: Path, admin_user: str, admin_password: str |
         # Nothing reachable yet
         return STATE_REBOOTING
 
-    if saved == STATE_POST_FIPS_UP:
-        # Key auth works both before and after password change
-        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
-        if ssh.try_connect():
-            ssh.close()
-            # If admin_password already saved, password change is done
-            if state.get("admin_password"):
-                LOGGER.info("Post-FIPS firewall up, password already set — marking DONE")
-                return STATE_DONE
-            return STATE_POST_FIPS_UP
-        return STATE_REBOOTING
-
     return saved
 
 
@@ -829,8 +746,7 @@ def detect_state(ip: str, key_path: Path, admin_user: str, admin_password: str |
 
 
 def enable_fips(ip: str, key_path: Path | None, admin_user: str,
-                admin_password: str | None, new_password: str,
-                state_dir: Path) -> bool:
+                admin_password: str | None, state_dir: Path) -> bool:
     """Enable FIPS-CC mode on an AWS VM-Series firewall, resuming from saved state."""
 
     state = load_state(ip, state_dir)
@@ -843,8 +759,6 @@ def enable_fips(ip: str, key_path: Path | None, admin_user: str,
 
     if status == STATE_DONE:
         LOGGER.info("FIPS-CC mode already enabled. Nothing to do.")
-        saved_password = state.get("admin_password", POST_FIPS_PASSWORD)
-        LOGGER.info("Admin password: %s", saved_password)
         return True
 
     # ------------------------------------------------------------------
@@ -910,19 +824,10 @@ def enable_fips(ip: str, key_path: Path | None, admin_user: str,
     if status == STATE_REBOOTING:
         if not phase_wait_for_post_fips(ip, key_path, state, state_dir):
             return False
-        status = state["status"]
-
-    # ------------------------------------------------------------------
-    # Phase 5: Set new admin password
-    # ------------------------------------------------------------------
-    if status == STATE_POST_FIPS_UP:
-        if not phase_set_admin_password(ip, key_path, new_password, state, state_dir):
-            return False
 
     LOGGER.info("=" * 60)
     LOGGER.info("FIPS-CC mode successfully enabled on %s", ip)
-    LOGGER.info("Admin credentials: %s / %s", POST_FIPS_USER, new_password)
-    LOGGER.info("All configuration has been erased — re-bootstrap as needed.")
+    LOGGER.info("Firewall is in factory-default state — ready for AMI capture.")
     LOGGER.info("=" * 60)
     return True
 
@@ -939,15 +844,11 @@ def main():
         epilog="""
 Examples:
   python aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
-  python aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --new-password MyP@ssw0rd
   python aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --debug
 
-If --new-password is omitted a secure random password is generated and displayed
-on completion. The password is also saved in the state file.
-
 The admin SSH password (Phase 1 only) can be set via the NGFW_ADMIN_PASSWORD
-environment variable if needed. Phases 2-3 use the SSH key (ec2-user). Phase 4
-uses admin/paloalto — SSH keys are not re-injected after factory reset.
+environment variable if needed. Phases 2-4 use the SSH key (ec2-user for MRT,
+admin key for post-FIPS). The firewall is left in factory-default state.
 
 WARNING: Enabling FIPS-CC mode performs a full factory reset.
          All configuration and credentials are erased and cannot be retrieved.
@@ -971,13 +872,6 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
         metavar="PASSWORD",
         default=None,
         help="Admin password (overrides NGFW_ADMIN_PASSWORD env var)",
-    )
-    parser.add_argument(
-        "--new-password",
-        metavar="PASSWORD",
-        default=None,
-        help="New admin password to set after FIPS-CC mode is enabled "
-             "(generated randomly if omitted)",
     )
     parser.add_argument(
         "--state-dir",
@@ -1018,16 +912,11 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
         or os.environ.get("NGFW_ADMIN_PASSWORD")
     )
 
-    new_password = args.new_password or generate_password()
-    if not args.new_password:
-        LOGGER.info("No --new-password provided; generated: %s", new_password)
-
     success = enable_fips(
         ip=args.ip,
         key_path=key_path,
         admin_user=args.admin_user,
         admin_password=admin_password,
-        new_password=new_password,
         state_dir=state_dir,
     )
     sys.exit(0 if success else 1)
