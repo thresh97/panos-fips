@@ -385,15 +385,16 @@ def save_state(state: dict, state_dir: Path):
 # ---------------------------------------------------------------------------
 
 
-def _mrt_ssh_client(ip: str, mrt_password: str | None) -> FirewallSSHClient:
+def _mrt_ssh_client(ip: str, serial: str) -> FirewallSSHClient:
     """
     Return a FirewallSSHClient configured for MRT access on Azure.
 
-    The Azure MRT SSH server always presents as user 'maint' (as stated in
-    the auth banner). Authentication uses the deployment password passed via
-    --mrt-password. Key auth is not accepted by the MRT SSH server.
+    The Azure MRT SSH server authenticates as 'maint' with the device
+    serial number as the password — the same pattern as hardware firewalls.
+    The serial is read from the running firewall in Phase 1 and stored in
+    the state file.
     """
-    return FirewallSSHClient(ip, MRT_USER, key_path=None, password=mrt_password)
+    return FirewallSSHClient(ip, MRT_USER, key_path=None, password=serial)
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +404,10 @@ def _mrt_ssh_client(ip: str, mrt_password: str | None) -> FirewallSSHClient:
 
 def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
                       password: str | None, state: dict, state_dir: Path) -> bool:
-    """SSH as the deployment user and issue `debug system maintenance-mode`."""
+    """
+    SSH as the deployment user, verify the firewall is licensed (serial
+    number required for MRT auth), then issue `debug system maintenance-mode`.
+    """
     LOGGER.info("Phase 1: Triggering maintenance mode on %s", ip)
 
     ssh = FirewallSSHClient(ip, admin_user, key_path, password)
@@ -412,14 +416,43 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
         return False
 
     try:
-        # PAN-OS SSH ignores exec_command arguments and always opens the CLI
-        # shell — invoke_shell() is the correct approach. It allocates a PTY
-        # by default, which is what PAN-OS requires for interactive commands.
         chan = ssh.invoke_shell()
 
-        # Wait for the CLI prompt before sending the command
         if not _wait_for_in_channel(chan, ">", timeout=30):
             LOGGER.warning("Did not see CLI prompt — sending command anyway")
+
+        # Read the serial number — it doubles as the MRT 'maint' password.
+        # The firewall must be licensed before enabling FIPS-CC mode.
+        LOGGER.info("Reading serial number...")
+        chan.send("show system info | match serial\n")
+        serial_buf = ""
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if chan.recv_ready():
+                serial_buf += chan.recv(4096).decode(errors="replace")
+                if "serial:" in serial_buf and serial_buf.count(">") >= 2:
+                    break
+            time.sleep(0.1)
+
+        serial = None
+        for line in serial_buf.splitlines():
+            if line.strip().startswith("serial:"):
+                val = line.split(":", 1)[-1].strip()
+                if val and val.lower() != "unknown":
+                    serial = val
+                    break
+
+        if not serial:
+            LOGGER.error(
+                "Firewall serial number is unknown — the firewall must be "
+                "licensed before enabling FIPS-CC mode. The serial number is "
+                "used as the MRT 'maint' SSH password."
+            )
+            return False
+
+        LOGGER.info("Serial number: %s", serial)
+        state["serial"] = serial
+        save_state(state, state_dir)
 
         LOGGER.info("Sending: debug system maintenance-mode")
         LOGGER.debug("send: debug system maintenance-mode")
@@ -450,7 +483,7 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
 # ---------------------------------------------------------------------------
 
 
-def phase_wait_for_mrt(ip: str, mrt_password: str | None, state: dict,
+def phase_wait_for_mrt(ip: str, state: dict,
                        state_dir: Path) -> paramiko.Channel | None:
     """
     Poll until the MRT is reachable via SSH as 'maint' + deployment password.
@@ -473,7 +506,7 @@ def phase_wait_for_mrt(ip: str, mrt_password: str | None, state: dict,
         LOGGER.info("MRT reconnect attempt %d (%.0fs remaining)...",
                     attempt, deadline - time.time())
 
-        ssh = _mrt_ssh_client(ip, mrt_password)
+        ssh = _mrt_ssh_client(ip, state["serial"])
         if ssh.try_connect():
             LOGGER.info("SSH connected as %s — verifying MRT interface", admin_user)
             chan = ssh.invoke_shell()
@@ -588,8 +621,7 @@ def phase_enable_fips_in_mrt(chan: paramiko.Channel, state: dict,
 # ---------------------------------------------------------------------------
 
 
-def phase_send_reboot_from_mrt(ip: str, mrt_password: str | None,
-                                state: dict, state_dir: Path) -> bool:
+def phase_send_reboot_from_mrt(ip: str, state: dict, state_dir: Path) -> bool:
     """
     Reconnect to MRT and send Reboot. Used when we know FIPS-CC completed
     (STATE_FIPS_COMPLETE) but lost SSH before pressing Reboot.
@@ -602,7 +634,7 @@ def phase_send_reboot_from_mrt(ip: str, mrt_password: str | None,
     interval = 30
 
     while time.time() < deadline:
-        ssh = _mrt_ssh_client(ip, mrt_password)
+        ssh = _mrt_ssh_client(ip, state["serial"])
         if ssh.try_connect():
             chan = ssh.invoke_shell()
             screen = MRTScreen()
@@ -711,8 +743,8 @@ def phase_wait_for_post_fips(ip: str, key_path: Path,
 
 
 def detect_state(ip: str, admin_user: str, key_path: Path | None,
-                 mrt_password: str | None, state: dict) -> str:
-    # MRT uses 'maint' + password; post-FIPS uses admin_user + key
+                 state: dict) -> str:
+    # MRT uses 'maint' + serial number; post-FIPS uses admin + key
     """
     Probe the live firewall to determine which phase to resume from.
     The saved state is the primary source of truth; live probes are used
@@ -729,7 +761,7 @@ def detect_state(ip: str, admin_user: str, key_path: Path | None,
 
     # For MRT-phase states, probe whether MRT SSH is up
     if saved in (STATE_MRT_TRIGGERED, STATE_MRT_READY):
-        ssh = _mrt_ssh_client(ip, mrt_password)
+        ssh = _mrt_ssh_client(ip, state["serial"])
         if ssh.try_connect():
             ssh.close()
             LOGGER.info("MRT is accessible — resuming at MRT_READY")
@@ -748,7 +780,7 @@ def detect_state(ip: str, admin_user: str, key_path: Path | None,
                 return STATE_DONE
 
         # MRT may still be running
-        ssh = _mrt_ssh_client(ip, mrt_password)
+        ssh = _mrt_ssh_client(ip, state["serial"])
         if ssh.try_connect():
             ssh.close()
             LOGGER.info("MRT still accessible — resuming at %s", saved)
@@ -765,12 +797,12 @@ def detect_state(ip: str, admin_user: str, key_path: Path | None,
 
 
 def enable_fips(ip: str, admin_user: str, key_path: Path | None,
-                admin_password: str | None, mrt_password: str | None,
+                admin_password: str | None,
                 state_dir: Path) -> bool:
     """Enable FIPS-CC mode on an Azure VM-Series firewall, resuming from saved state."""
 
     state = load_state(ip, state_dir)
-    status = detect_state(ip, admin_user, key_path, mrt_password, state)
+    status = detect_state(ip, admin_user, key_path, state)
     state["status"] = status
 
     LOGGER.info("=" * 60)
@@ -795,7 +827,7 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
     # ------------------------------------------------------------------
     chan = None
     if status == STATE_MRT_TRIGGERED:
-        chan = phase_wait_for_mrt(ip, mrt_password, state, state_dir)
+        chan = phase_wait_for_mrt(ip, state, state_dir)
         if chan is None:
             return False
         status = state["status"]
@@ -805,7 +837,7 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
     # ------------------------------------------------------------------
     if status == STATE_MRT_READY:
         if chan is None:
-            ssh = _mrt_ssh_client(ip, mrt_password)
+            ssh = _mrt_ssh_client(ip, state["serial"])
             if not ssh.connect(max_retries=5, delay=10):
                 LOGGER.error("Cannot reconnect to MRT at %s", ip)
                 return False
@@ -831,7 +863,7 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
         state["status"] = status
 
     if status == STATE_FIPS_COMPLETE:
-        if not phase_send_reboot_from_mrt(ip, mrt_password, state, state_dir):
+        if not phase_send_reboot_from_mrt(ip, state, state_dir):
             return False
         status = state["status"]
 
@@ -875,10 +907,9 @@ IMPORTANT: The VM must have been deployed with SSH key authentication.
 Azure password auth does not survive the FIPS-CC factory reset — if the VM
 was deployed with password-only auth, SSH access will be lost after FIPS.
 
-The --mrt-password is used to authenticate to the MRT as user 'maint'
-(Phases 2-3). This is the deployment password set when the VM was created.
-The MRT SSH server on Azure always uses 'maint' as the username regardless
-of the deployment admin username.
+The firewall must be licensed before running this script — the serial number
+assigned at licensing is used automatically as the MRT 'maint' SSH password
+(Phases 2-3). The script reads it from the running firewall in Phase 1.
 
 Phase 1 admin password can be set via the NGFW_ADMIN_PASSWORD environment
 variable if not using key auth for the initial SSH session.
@@ -905,12 +936,6 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
         metavar="PASSWORD",
         default=None,
         help="Admin password for Phase 1 SSH (overrides NGFW_ADMIN_PASSWORD env var)",
-    )
-    parser.add_argument(
-        "--mrt-password",
-        metavar="PASSWORD",
-        default=None,
-        help="Deployment password used to authenticate to the MRT as 'maint' (Phases 2-3)",
     )
     parser.add_argument(
         "--state-dir",
@@ -958,7 +983,6 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
         admin_user=args.admin_user,
         key_path=key_path,
         admin_password=admin_password,
-        mrt_password=args.mrt_password,
         state_dir=state_dir,
     )
     sys.exit(0 if success else 1)
