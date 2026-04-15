@@ -57,8 +57,8 @@ STATE_REBOOTING = "rebooting"
 STATE_DONE = "done"
 
 # Timing (seconds)
-MRT_TRIGGER_INITIAL_WAIT = 90    # pause after triggering before first reconnect
-MRT_RECONNECT_TIMEOUT = 360      # total window to keep attempting MRT reconnect
+MRT_TRIGGER_INITIAL_WAIT = 180   # pause after triggering before first reconnect
+MRT_RECONNECT_TIMEOUT = 600      # total window to keep attempting MRT reconnect
 MRT_RECONNECT_INTERVAL = 15      # delay between MRT reconnect attempts
 POST_REBOOT_INITIAL_WAIT = 90    # pause after reboot before first reconnect
 POST_REBOOT_TIMEOUT = 360        # total window to keep attempting post-FIPS reconnect
