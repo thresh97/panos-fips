@@ -88,6 +88,8 @@ pip install -r requirements.txt
 
 **Post-FIPS phase (Phase 4):** SSH as `admin` with password `paloalto` (the post-factory-reset default). Key-based auth is not possible here — AWS cloud-init does not re-inject SSH keys after a factory reset, so the `authorized_keys` file is gone.
 
+**Password change (Phase 5):** Connects with the `paloalto` default, enters configure mode, sets `--new-password`, and commits. If `--new-password` is omitted a secure random password is generated. The final password is saved in the state file and printed on completion.
+
 ### Arguments
 
 | Argument | Default | Description |
@@ -96,23 +98,24 @@ pip install -r requirements.txt
 | `--ssh-key` | *(required)* | Path to SSH private key (`.pem`) associated with the EC2 instance |
 | `--admin-user` | `admin` | Admin username for the initial SSH session |
 | `--admin-password` | *(env: `NGFW_ADMIN_PASSWORD`)* | Admin password if not using key auth for Phase 1 |
+| `--new-password` | *(generated)* | New admin password to set after FIPS-CC mode is enabled |
 | `--state-dir` | `.` | Directory for state files |
 | `--debug` | `false` | Verbose logging with full screen dumps at each MRT navigation step |
 
 ### Examples
 
 ```bash
-# Basic usage
+# Basic usage — generates and prints a random admin password on completion
 python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
+
+# Set a specific admin password
+python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --new-password 'MyP@ssw0rd!'
 
 # With debug output (recommended for first run — shows full MRT screen at each step)
 python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --debug
 
 # Admin account uses password instead of key (Phase 1 only)
 export NGFW_ADMIN_PASSWORD='YourAdminPassword'
-python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
-
-# Resume an interrupted run (state file is discovered automatically)
 python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
 ```
 
@@ -125,7 +128,7 @@ The script is fully idempotent. Re-running the same command on a firewall that i
 Once the script completes, the firewall is running in FIPS-CC mode with:
 
 - **All configuration erased.** Re-bootstrap via Panorama, bootstrap package, or manual configuration.
-- **Default credentials reset** to `admin` / `paloalto`. Change these immediately.
+- **Admin password changed** to the value of `--new-password` (or the generated password printed on completion). The default `paloalto` credential is no longer active.
 - **FIPS-CC displayed** in the status bar of the web interface at all times.
 - **HA must be re-enabled manually** if the firewall was part of an HA pair before the mode change. HA1 control link encryption is required in FIPS-CC mode.
 
