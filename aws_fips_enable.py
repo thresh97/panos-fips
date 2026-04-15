@@ -145,16 +145,6 @@ class FirewallSSHClient:
         chan.settimeout(5)
         return chan
 
-    def exec_with_pty(self, command: str) -> tuple:
-        """
-        Run a command with PTY allocation, matching what an interactive SSH
-        session does. Returns (stdin, channel) so the caller can write to
-        stdin and read from the channel.
-        """
-        stdin, stdout, _ = self._client.exec_command(command, get_pty=True)
-        stdout.channel.settimeout(5)
-        return stdin, stdout.channel
-
     def run_command(self, command: str, timeout: int = 30) -> tuple[str, str]:
         _, stdout, stderr = self._client.exec_command(command, timeout=timeout)
         return stdout.read().decode(), stderr.read().decode()
