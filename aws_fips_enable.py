@@ -857,9 +857,9 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
     parser.add_argument("ip", help="Management IP address of the firewall")
     parser.add_argument(
         "--ssh-key",
-        required=True,
+        default="~/.ssh/id_rsa",
         metavar="PATH",
-        help="SSH private key path (used for admin phase and MRT ec2-user access)",
+        help="SSH private key path (default: ~/.ssh/id_rsa)",
     )
     parser.add_argument(
         "--admin-user",

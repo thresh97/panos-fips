@@ -95,7 +95,7 @@ The firewall is left in a factory-default, unlicensed state — the correct stat
 | Argument | Default | Description |
 |---|---|---|
 | `ip` | *(required)* | Management IP address of the firewall |
-| `--ssh-key` | *(required)* | Path to SSH private key (`.pem`) associated with the EC2 instance |
+| `--ssh-key` | `~/.ssh/id_rsa` | Path to SSH private key associated with the EC2 instance |
 | `--admin-user` | `admin` | Admin username for the initial SSH session |
 | `--admin-password` | *(env: `NGFW_ADMIN_PASSWORD`)* | Admin password if not using key auth for Phase 1 |
 | `--state-dir` | `.` | Directory for state files |
