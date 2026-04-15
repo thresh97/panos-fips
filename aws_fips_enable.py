@@ -234,6 +234,7 @@ class MRTNavigator:
             try:
                 if self.chan.recv_ready():
                     data = self.chan.recv(4096)
+                    LOGGER.debug("mrt recv: %r", data)
                     self.screen.feed(data)
                     deadline = time.time() + 0.5  # reset on new data
                 else:
@@ -295,18 +296,22 @@ def _wait_for_in_channel(chan: paramiko.Channel, text: str,
     Accumulate channel output until `text` appears, or timeout expires.
     Used for interactive SSH sessions (configure mode, password prompts).
     """
+    LOGGER.debug("wait_for_in_channel: waiting for %r (timeout=%ds)", text, timeout)
     buf = ""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             if chan.recv_ready():
-                buf += chan.recv(4096).decode(errors="replace")
+                chunk = chan.recv(4096).decode(errors="replace")
+                LOGGER.debug("recv: %r", chunk)
+                buf += chunk
                 if text in buf:
+                    LOGGER.debug("wait_for_in_channel: found %r", text)
                     return True
         except Exception:
             break
         time.sleep(0.1)
-    LOGGER.debug("Timeout waiting for %r. Buffer tail: %r", text, buf[-200:])
+    LOGGER.debug("wait_for_in_channel: timeout. Buffer tail: %r", buf[-300:])
     return False
 
 
@@ -362,6 +367,7 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
 
         # Wait for the CLI prompt, then disable pager
         _wait_for_in_channel(chan, ">", timeout=30)
+        LOGGER.debug("send: set cli pager off")
         chan.send("set cli pager off\n")
         _wait_for_in_channel(chan, ">", timeout=15)
 
@@ -371,6 +377,7 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
         # PAN-OS prompts: "Do you want to continue? (y or n)"
         if not _wait_for_in_channel(chan, "y or n", timeout=15):
             LOGGER.warning("Did not see confirmation prompt — sending y anyway")
+        LOGGER.debug("send: y")
         chan.send("y\n")
 
         LOGGER.info("Maintenance mode triggered. Firewall will reboot in ~2-3 minutes.")
@@ -674,22 +681,27 @@ def phase_set_admin_password(ip: str, new_password: str, state: dict,
         if not _wait_for_in_channel(chan, ">", timeout=30):
             raise RuntimeError("Did not reach CLI prompt")
 
+        LOGGER.debug("send: configure")
         chan.send("configure\n")
         if not _wait_for_in_channel(chan, "#", timeout=30):
             raise RuntimeError("Did not enter configure mode")
 
+        LOGGER.debug("send: set mgt-config users admin password")
         chan.send("set mgt-config users admin password\n")
         if not _wait_for_in_channel(chan, "Enter password", timeout=30):
             raise RuntimeError("Did not see 'Enter password' prompt")
 
+        LOGGER.debug("send: <password>")
         chan.send(new_password + "\n")
         if not _wait_for_in_channel(chan, "Confirm password", timeout=30):
             raise RuntimeError("Did not see 'Confirm password' prompt")
 
+        LOGGER.debug("send: <password>")
         chan.send(new_password + "\n")
         if not _wait_for_in_channel(chan, "#", timeout=30):
             raise RuntimeError("Did not return to config prompt after password entry")
 
+        LOGGER.debug("send: commit")
         chan.send("commit\n")
         if not _wait_for_in_channel(chan, "committed successfully", timeout=120):
             raise RuntimeError("Commit did not complete successfully")
@@ -955,7 +967,10 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    logging.getLogger("paramiko").setLevel(logging.WARNING)
+    if args.debug:
+        logging.getLogger("paramiko.transport").setLevel(logging.DEBUG)
+    else:
+        logging.getLogger("paramiko").setLevel(logging.WARNING)
 
     key_path = Path(args.ssh_key).expanduser()
     if not key_path.exists():
