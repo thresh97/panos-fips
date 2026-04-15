@@ -359,25 +359,21 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
 
     try:
         chan = ssh.invoke_shell()
-        screen = MRTScreen()
-        nav = MRTNavigator(chan, screen)
 
-        # Disable pager and wait for the CLI prompt to settle
+        # Wait for the CLI prompt, then disable pager
+        _wait_for_in_channel(chan, ">", timeout=30)
         chan.send("set cli pager off\n")
-        nav._drain(settle=2.0)
+        _wait_for_in_channel(chan, ">", timeout=15)
 
         LOGGER.info("Sending: debug system maintenance-mode")
         chan.send("debug system maintenance-mode\n")
-        nav._drain(settle=1.5)
 
-        # Confirm the y/n prompt if present
-        if (screen.contains("Proceed") or screen.contains("confirm")
-                or screen.contains("[y/n]") or screen.contains("yes/no")):
-            LOGGER.debug("Confirming maintenance mode prompt")
-            chan.send("y\n")
-            nav._drain()
+        # PAN-OS prompts: "Do you want to continue? (y or n)"
+        if not _wait_for_in_channel(chan, "y or n", timeout=15):
+            LOGGER.warning("Did not see confirmation prompt — sending y anyway")
+        chan.send("y\n")
 
-        LOGGER.info("Maintenance mode command sent. Firewall will reboot in ~2-3 minutes.")
+        LOGGER.info("Maintenance mode triggered. Firewall will reboot in ~2-3 minutes.")
     except Exception as exc:
         # SSH session dropping is expected once the reboot starts
         LOGGER.debug("SSH session ended (expected): %s", exc)
