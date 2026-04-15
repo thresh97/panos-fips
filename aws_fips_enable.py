@@ -143,6 +143,16 @@ class FirewallSSHClient:
         chan.settimeout(5)
         return chan
 
+    def exec_with_pty(self, command: str) -> tuple:
+        """
+        Run a command with PTY allocation, matching what an interactive SSH
+        session does. Returns (stdin, channel) so the caller can write to
+        stdin and read from the channel.
+        """
+        stdin, stdout, _ = self._client.exec_command(command, get_pty=True)
+        stdout.channel.settimeout(5)
+        return stdin, stdout.channel
+
     def run_command(self, command: str, timeout: int = 30) -> tuple[str, str]:
         _, stdout, stderr = self._client.exec_command(command, timeout=timeout)
         return stdout.read().decode(), stderr.read().decode()
@@ -363,22 +373,17 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
         return False
 
     try:
-        chan = ssh.invoke_shell()
-
-        # Wait for the CLI prompt, then disable pager
-        _wait_for_in_channel(chan, ">", timeout=30)
-        LOGGER.debug("send: set cli pager off")
-        chan.send("set cli pager off\n")
-        _wait_for_in_channel(chan, ">", timeout=15)
-
+        # Use exec_command with PTY so PAN-OS treats this as an interactive
+        # session — without a PTY it may refuse the command entirely.
         LOGGER.info("Sending: debug system maintenance-mode")
-        chan.send("debug system maintenance-mode\n")
+        stdin, chan = ssh.exec_with_pty("debug system maintenance-mode")
 
         # PAN-OS prompts: "Do you want to continue? (y or n)"
         if not _wait_for_in_channel(chan, "y or n", timeout=15):
             LOGGER.warning("Did not see confirmation prompt — sending y anyway")
         LOGGER.debug("send: y")
-        chan.send("y\n")
+        stdin.write("y\n")
+        stdin.flush()
 
         LOGGER.info("Maintenance mode triggered. Firewall will reboot in ~2-3 minutes.")
     except Exception as exc:
