@@ -50,6 +50,15 @@ SCREEN_HEIGHT = 24
 # Default Azure VM-Series deployment username
 DEFAULT_ADMIN_USER = "panadmin"
 
+# MRT SSH username on Azure — the MRT SSH server always uses 'maint',
+# authenticated with the deployment password (--mrt-password).
+MRT_USER = "maint"
+
+# Post-FIPS username — factory reset resets to the PAN-OS built-in admin
+# account regardless of the deployment username (panadmin). Azure re-injects
+# the SSH key for this user at boot.
+POST_FIPS_USER = "admin"
+
 # State machine values
 STATE_NOT_STARTED = "not_started"
 STATE_MRT_TRIGGERED = "mrt_triggered"
@@ -376,16 +385,15 @@ def save_state(state: dict, state_dir: Path):
 # ---------------------------------------------------------------------------
 
 
-def _mrt_ssh_client(ip: str, admin_user: str, key_path: Path | None,
-                    mrt_password: str | None) -> FirewallSSHClient:
+def _mrt_ssh_client(ip: str, mrt_password: str | None) -> FirewallSSHClient:
     """
     Return a FirewallSSHClient configured for MRT access on Azure.
 
-    Azure MRT authenticates with the credentials used when deploying the VM.
-    Use --mrt-password if the VM was deployed with password auth; otherwise
-    the SSH key is used.
+    The Azure MRT SSH server always presents as user 'maint' (as stated in
+    the auth banner). Authentication uses the deployment password passed via
+    --mrt-password. Key auth is not accepted by the MRT SSH server.
     """
-    return FirewallSSHClient(ip, admin_user, key_path=key_path, password=mrt_password)
+    return FirewallSSHClient(ip, MRT_USER, key_path=None, password=mrt_password)
 
 
 # ---------------------------------------------------------------------------
@@ -442,16 +450,11 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
 # ---------------------------------------------------------------------------
 
 
-def phase_wait_for_mrt(ip: str, admin_user: str, key_path: Path | None,
-                       mrt_password: str | None, state: dict,
+def phase_wait_for_mrt(ip: str, mrt_password: str | None, state: dict,
                        state_dir: Path) -> paramiko.Channel | None:
     """
-    Poll until the MRT is reachable via SSH using the deployment credentials.
+    Poll until the MRT is reachable via SSH as 'maint' + deployment password.
     Returns an open shell channel into the MRT, or None on timeout.
-
-    Azure MRT authenticates with the credentials created at VM deployment:
-    use --mrt-password if the VM was deployed with password auth, otherwise
-    the SSH key is used.
     """
     LOGGER.info("Phase 2: Waiting for MRT on %s (initial wait ~%ds)", ip,
                 MRT_TRIGGER_INITIAL_WAIT)
@@ -470,7 +473,7 @@ def phase_wait_for_mrt(ip: str, admin_user: str, key_path: Path | None,
         LOGGER.info("MRT reconnect attempt %d (%.0fs remaining)...",
                     attempt, deadline - time.time())
 
-        ssh = _mrt_ssh_client(ip, admin_user, key_path, mrt_password)
+        ssh = _mrt_ssh_client(ip, mrt_password)
         if ssh.try_connect():
             LOGGER.info("SSH connected as %s — verifying MRT interface", admin_user)
             chan = ssh.invoke_shell()
@@ -585,9 +588,8 @@ def phase_enable_fips_in_mrt(chan: paramiko.Channel, state: dict,
 # ---------------------------------------------------------------------------
 
 
-def phase_send_reboot_from_mrt(ip: str, admin_user: str, key_path: Path | None,
-                                mrt_password: str | None, state: dict,
-                                state_dir: Path) -> bool:
+def phase_send_reboot_from_mrt(ip: str, mrt_password: str | None,
+                                state: dict, state_dir: Path) -> bool:
     """
     Reconnect to MRT and send Reboot. Used when we know FIPS-CC completed
     (STATE_FIPS_COMPLETE) but lost SSH before pressing Reboot.
@@ -600,7 +602,7 @@ def phase_send_reboot_from_mrt(ip: str, admin_user: str, key_path: Path | None,
     interval = 30
 
     while time.time() < deadline:
-        ssh = _mrt_ssh_client(ip, admin_user, key_path, mrt_password)
+        ssh = _mrt_ssh_client(ip, mrt_password)
         if ssh.try_connect():
             chan = ssh.invoke_shell()
             screen = MRTScreen()
@@ -655,7 +657,7 @@ def phase_send_reboot_from_mrt(ip: str, admin_user: str, key_path: Path | None,
 # ---------------------------------------------------------------------------
 
 
-def phase_wait_for_post_fips(ip: str, admin_user: str, key_path: Path,
+def phase_wait_for_post_fips(ip: str, key_path: Path,
                               state: dict, state_dir: Path) -> bool:
     """
     Poll until the firewall is reachable after the FIPS-CC factory reset.
@@ -664,7 +666,7 @@ def phase_wait_for_post_fips(ip: str, admin_user: str, key_path: Path,
     must have been deployed before enabling FIPS-CC mode.
     """
     LOGGER.info("Phase 4: Waiting for firewall to boot in FIPS-CC mode")
-    LOGGER.info("Connecting as %s using SSH key", admin_user)
+    LOGGER.info("Connecting as %s using SSH key", POST_FIPS_USER)
 
     reboot_at = state.get("reboot_triggered_at", time.time())
     elapsed = time.time() - reboot_at
@@ -680,9 +682,9 @@ def phase_wait_for_post_fips(ip: str, admin_user: str, key_path: Path,
         LOGGER.info("Post-FIPS reconnect attempt %d (%.0fs remaining)...",
                     attempt, deadline - time.time())
 
-        ssh = FirewallSSHClient(ip, admin_user, key_path=key_path)
+        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
         if ssh.try_connect():
-            LOGGER.info("Post-FIPS firewall is reachable")
+            LOGGER.info("Post-FIPS firewall is reachable as %s", POST_FIPS_USER)
             try:
                 out, _ = ssh.run_command(
                     "show system info | match operational-mode", timeout=15)
@@ -710,6 +712,7 @@ def phase_wait_for_post_fips(ip: str, admin_user: str, key_path: Path,
 
 def detect_state(ip: str, admin_user: str, key_path: Path | None,
                  mrt_password: str | None, state: dict) -> str:
+    # MRT uses 'maint' + password; post-FIPS uses admin_user + key
     """
     Probe the live firewall to determine which phase to resume from.
     The saved state is the primary source of truth; live probes are used
@@ -726,7 +729,7 @@ def detect_state(ip: str, admin_user: str, key_path: Path | None,
 
     # For MRT-phase states, probe whether MRT SSH is up
     if saved in (STATE_MRT_TRIGGERED, STATE_MRT_READY):
-        ssh = _mrt_ssh_client(ip, admin_user, key_path, mrt_password)
+        ssh = _mrt_ssh_client(ip, mrt_password)
         if ssh.try_connect():
             ssh.close()
             LOGGER.info("MRT is accessible — resuming at MRT_READY")
@@ -738,14 +741,14 @@ def detect_state(ip: str, admin_user: str, key_path: Path | None,
     if saved in (STATE_FIPS_SELECTED, STATE_FIPS_COMPLETE, STATE_REBOOTING):
         # Post-FIPS: SSH key only (password does not survive factory reset on Azure)
         if key_path:
-            ssh = FirewallSSHClient(ip, admin_user, key_path=key_path)
+            ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
             if ssh.try_connect():
                 ssh.close()
-                LOGGER.info("Post-FIPS firewall is up — marking DONE")
+                LOGGER.info("Post-FIPS firewall is up as %s — marking DONE", POST_FIPS_USER)
                 return STATE_DONE
 
         # MRT may still be running
-        ssh = _mrt_ssh_client(ip, admin_user, key_path, mrt_password)
+        ssh = _mrt_ssh_client(ip, mrt_password)
         if ssh.try_connect():
             ssh.close()
             LOGGER.info("MRT still accessible — resuming at %s", saved)
@@ -792,8 +795,7 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
     # ------------------------------------------------------------------
     chan = None
     if status == STATE_MRT_TRIGGERED:
-        chan = phase_wait_for_mrt(ip, admin_user, key_path, mrt_password,
-                                  state, state_dir)
+        chan = phase_wait_for_mrt(ip, mrt_password, state, state_dir)
         if chan is None:
             return False
         status = state["status"]
@@ -803,7 +805,7 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
     # ------------------------------------------------------------------
     if status == STATE_MRT_READY:
         if chan is None:
-            ssh = _mrt_ssh_client(ip, admin_user, key_path, mrt_password)
+            ssh = _mrt_ssh_client(ip, mrt_password)
             if not ssh.connect(max_retries=5, delay=10):
                 LOGGER.error("Cannot reconnect to MRT at %s", ip)
                 return False
@@ -829,8 +831,7 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
         state["status"] = status
 
     if status == STATE_FIPS_COMPLETE:
-        if not phase_send_reboot_from_mrt(ip, admin_user, key_path, mrt_password,
-                                          state, state_dir):
+        if not phase_send_reboot_from_mrt(ip, mrt_password, state, state_dir):
             return False
         status = state["status"]
 
@@ -845,7 +846,7 @@ def enable_fips(ip: str, admin_user: str, key_path: Path | None,
                 "If the firewall comes up, connect manually with an SSH key."
             )
             return False
-        if not phase_wait_for_post_fips(ip, admin_user, key_path, state, state_dir):
+        if not phase_wait_for_post_fips(ip, key_path, state, state_dir):
             return False
 
     LOGGER.info("=" * 60)
@@ -874,9 +875,10 @@ IMPORTANT: The VM must have been deployed with SSH key authentication.
 Azure password auth does not survive the FIPS-CC factory reset — if the VM
 was deployed with password-only auth, SSH access will be lost after FIPS.
 
-The --mrt-password is the credential used to access the MRT (Phase 2-3).
-This is the password set when the VM was deployed. If the VM was deployed
-with SSH key auth only, omit --mrt-password and the SSH key will be used.
+The --mrt-password is used to authenticate to the MRT as user 'maint'
+(Phases 2-3). This is the deployment password set when the VM was created.
+The MRT SSH server on Azure always uses 'maint' as the username regardless
+of the deployment admin username.
 
 Phase 1 admin password can be set via the NGFW_ADMIN_PASSWORD environment
 variable if not using key auth for the initial SSH session.
@@ -908,7 +910,7 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
         "--mrt-password",
         metavar="PASSWORD",
         default=None,
-        help="Deployment password for MRT access (Phases 2-3); omit if using SSH key for MRT",
+        help="Deployment password used to authenticate to the MRT as 'maint' (Phases 2-3)",
     )
     parser.add_argument(
         "--state-dir",

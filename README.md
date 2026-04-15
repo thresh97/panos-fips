@@ -172,10 +172,10 @@ MGMT_IP=$(jq -r '.management_public_ip' ./*-state.json)
 
 # Enable FIPS-CC
 cd ../../panos-fips
-python3 azure_fips_enable.py "$MGMT_IP"
+python3 azure_fips_enable.py "$MGMT_IP" --mrt-password 'DeploymentP@ss'
 ```
 
-If the VM was deployed with a password in addition to the SSH key, pass it via `--mrt-password` for MRT access (Phases 2-3).
+`--mrt-password` is the deployment password set when the VM was created. The Azure MRT SSH server always authenticates as user `maint` with this password, regardless of the deployment admin username.
 
 ---
 
@@ -186,7 +186,7 @@ The MRT credential model is determined by where the device is running, not wheth
 | Script | Covers |
 |---|---|
 | `aws_fips_enable.py` *(current)* | VM-Series on AWS, Panorama virtual on AWS |
-| `azure_fips_enable.py` *(current)* | VM-Series on Azure, Panorama virtual on Azure — MRT uses deployment credentials (`--mrt-password` or SSH key); SSH key required pre-FIPS (password auth does not survive factory reset) |
+| `azure_fips_enable.py` *(current)* | VM-Series on Azure, Panorama virtual on Azure — MRT SSH server uses `maint` as username with `--mrt-password` (deployment password); SSH key required for post-FIPS access (password auth does not survive factory reset) |
 | `gcp_fips_enable.py` | VM-Series on GCP, Panorama virtual on GCP — `gcp-user` + SSH key for MRT |
 | `hw_fips_enable.py` | Hardware NGFW, M-Series Panorama, Panorama virtual on VMware/KVM — MRT SSH uses `maint` as username and the device serial number as password |
 
