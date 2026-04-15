@@ -157,15 +157,20 @@ python3 aws_fips_enable.py "$MGMT_IP" --ssh-key ~/.ssh/my-key.pem
 
 ## Deploying a Target Instance (Azure)
 
+The firewall must be licensed before running `azure_fips_enable.py` — the serial number assigned at licensing is used automatically as the `maint` SSH password for MRT access (Phases 2-3).
+
 ```bash
-# Deploy a VM-Series instance
+# Deploy and license a VM-Series instance
 cd vmseries-custom/azure
 python3 azure_create_infra.py create \
   --region eastus \
   --name-tag pa-fw-fips-test \
   --license-type byol \
   --ssh-key-file ~/.ssh/id_rsa.pub \
-  --allowed-ips 203.0.113.0/32
+  --allowed-ips 203.0.113.0/32 \
+  --auth-code AUTHCODE \
+  --pin-id PIN-ID \
+  --pin-value PIN-VALUE
 
 # Extract the management IP from the state file
 MGMT_IP=$(jq -r '.management_public_ip' ./*-state.json)
@@ -174,8 +179,6 @@ MGMT_IP=$(jq -r '.management_public_ip' ./*-state.json)
 cd ../../panos-fips
 python3 azure_fips_enable.py "$MGMT_IP"
 ```
-
-The firewall must be licensed before running `azure_fips_enable.py`. The script reads the serial number from the running firewall and uses it automatically as the `maint` SSH password for MRT access (Phases 2-3).
 
 ---
 
