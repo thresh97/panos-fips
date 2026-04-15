@@ -151,7 +151,7 @@ python3 aws_create_infra.py create \
   --allowed-ips 203.0.113.0/32
 
 # Extract the management IP from the state file
-MGMT_IP=$(jq -r '.eip_public_ip' ./*-state.json)
+MGMT_IP=$(jq -r '.management_public_ip' ./*-state.json)
 
 # Enable FIPS-CC
 cd ../../panos-fips
