@@ -146,7 +146,7 @@ cd vmseries-custom/aws
 python3 aws_create_infra.py create \
   --region us-east-1 \
   --name-tag pa-fw-fips-test \
-  --license-type byol \
+  --license-type byol-x86 \
   --ssh-key-file ~/.ssh/my-key.pub \
   --allowed-ips 203.0.113.0/32
 
