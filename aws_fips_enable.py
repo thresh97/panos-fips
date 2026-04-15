@@ -300,6 +300,36 @@ def generate_password(length: int = 16) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def _wait_for_channel_close(chan: paramiko.Channel, timeout: int = 60):
+    """
+    Drain a channel until the server closes it (EOF) or timeout expires.
+
+    After sending a Reboot command to the MRT, we must let the server
+    terminate the session rather than closing the channel ourselves.
+    Closing the client side immediately after pressing Reboot sends an SSH
+    channel-close that the MRT can interpret as an abort.
+    """
+    LOGGER.debug("Waiting for server to close channel (max %ds)", timeout)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if chan.recv_ready():
+                data = chan.recv(4096)
+                if not data:
+                    LOGGER.debug("Channel closed by server (EOF)")
+                    return
+                LOGGER.debug("mrt recv post-reboot: %r", data)
+            elif chan.closed or chan.eof_received:
+                LOGGER.debug("Channel closed by server")
+                return
+            else:
+                time.sleep(0.5)
+        except Exception as exc:
+            LOGGER.debug("Channel closed: %s", exc)
+            return
+    LOGGER.debug("Timeout waiting for channel close — proceeding anyway")
+
+
 def _wait_for_in_channel(chan: paramiko.Channel, text: str,
                           timeout: int = 60) -> bool:
     """
@@ -525,7 +555,12 @@ def phase_enable_fips_in_mrt(chan: paramiko.Channel, state: dict,
 
     LOGGER.info("Selecting 'Reboot'")
     nav.navigate_to(MRT_TEXT_REBOOT)
-    nav.press_enter(settle=2.0)
+    nav.press_enter(settle=1.0)
+
+    # Wait for the server to drop the connection as the reboot starts.
+    # Do NOT close the channel from our side — the MRT may treat a
+    # client-initiated disconnect as an abort of the Reboot command.
+    _wait_for_channel_close(chan, timeout=60)
 
     state["status"] = STATE_REBOOTING
     state["reboot_triggered_at"] = time.time()
@@ -565,12 +600,12 @@ def phase_send_reboot_from_mrt(ip: str, key_path: Path, state: dict,
             if screen.contains(MRT_TEXT_REBOOT):
                 LOGGER.info("MRT is showing Reboot option — sending Reboot now")
                 nav.navigate_to(MRT_TEXT_REBOOT)
-                nav.press_enter()
+                nav.press_enter(settle=1.0)
+                _wait_for_channel_close(chan, timeout=60)
                 state["status"] = STATE_REBOOTING
                 state["reboot_triggered_at"] = time.time()
                 save_state(state, state_dir)
                 try:
-                    chan.close()
                     ssh.close()
                 except Exception:
                     pass
