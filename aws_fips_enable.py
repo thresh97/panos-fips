@@ -647,16 +647,16 @@ def phase_send_reboot_from_mrt(ip: str, key_path: Path, state: dict,
 # ---------------------------------------------------------------------------
 
 
-def phase_wait_for_post_fips(ip: str, state: dict, state_dir: Path) -> bool:
+def phase_wait_for_post_fips(ip: str, key_path: Path, state: dict,
+                              state_dir: Path) -> bool:
     """
     Poll until the firewall is reachable after the FIPS-CC factory reset.
 
-    After a factory reset the firewall has no SSH authorized_keys — AWS
-    cloud-init does not re-inject them. Password auth (admin/paloalto) is
-    the only option here.
+    On AWS, cloud-init re-injects the instance SSH key at boot even after
+    a factory reset. Use key auth; admin/paloalto password does not work.
     """
     LOGGER.info("Phase 4: Waiting for firewall to boot in FIPS-CC mode")
-    LOGGER.info("Post-FIPS default credentials: %s / %s", POST_FIPS_USER, POST_FIPS_PASSWORD)
+    LOGGER.info("Connecting as %s using SSH key", POST_FIPS_USER)
 
     reboot_at = state.get("reboot_triggered_at", time.time())
     elapsed = time.time() - reboot_at
@@ -672,8 +672,7 @@ def phase_wait_for_post_fips(ip: str, state: dict, state_dir: Path) -> bool:
         LOGGER.info("Post-FIPS reconnect attempt %d (%.0fs remaining)...",
                     attempt, deadline - time.time())
 
-        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=None,
-                                password=POST_FIPS_PASSWORD)
+        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
         if ssh.try_connect():
             LOGGER.info("Post-FIPS firewall is reachable")
             try:
@@ -701,16 +700,15 @@ def phase_wait_for_post_fips(ip: str, state: dict, state_dir: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def phase_set_admin_password(ip: str, new_password: str, state: dict,
-                              state_dir: Path) -> bool:
+def phase_set_admin_password(ip: str, key_path: Path, new_password: str,
+                              state: dict, state_dir: Path) -> bool:
     """
-    SSH as admin with the post-FIPS default password and change it to
-    new_password via configure mode. Saves the new password to state.
+    SSH as admin using the instance SSH key and set new_password via
+    configure mode. Saves the new password to state.
     """
     LOGGER.info("Phase 5: Setting new admin password")
 
-    ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=None,
-                            password=POST_FIPS_PASSWORD)
+    ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
     if not ssh.connect(max_retries=5, delay=10):
         LOGGER.error("Cannot connect to firewall to change admin password")
         return False
@@ -793,9 +791,8 @@ def detect_state(ip: str, key_path: Path, admin_user: str, admin_password: str |
     # For FIPS-selected/complete/rebooting states, check if MRT is still up
     # or if the firewall has already booted into FIPS-CC mode
     if saved in (STATE_FIPS_SELECTED, STATE_FIPS_COMPLETE, STATE_REBOOTING):
-        # Post-FIPS uses password only — factory reset wipes authorized_keys
-        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=None,
-                                password=POST_FIPS_PASSWORD)
+        # Post-FIPS: AWS re-injects the SSH key at boot, use key auth
+        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
         if ssh.try_connect():
             ssh.close()
             LOGGER.info("Post-FIPS firewall is up — resuming at POST_FIPS_UP")
@@ -812,20 +809,14 @@ def detect_state(ip: str, key_path: Path, admin_user: str, admin_password: str |
         return STATE_REBOOTING
 
     if saved == STATE_POST_FIPS_UP:
-        # Check if password was already changed (new password saved in state)
-        new_password = state.get("admin_password")
-        if new_password:
-            ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=None,
-                                    password=new_password)
-            if ssh.try_connect():
-                ssh.close()
-                LOGGER.info("New admin password works — marking DONE")
-                return STATE_DONE
-        # Default password still works — password not yet changed
-        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=None,
-                                password=POST_FIPS_PASSWORD)
+        # Key auth works both before and after password change
+        ssh = FirewallSSHClient(ip, POST_FIPS_USER, key_path=key_path)
         if ssh.try_connect():
             ssh.close()
+            # If admin_password already saved, password change is done
+            if state.get("admin_password"):
+                LOGGER.info("Post-FIPS firewall up, password already set — marking DONE")
+                return STATE_DONE
             return STATE_POST_FIPS_UP
         return STATE_REBOOTING
 
@@ -917,7 +908,7 @@ def enable_fips(ip: str, key_path: Path | None, admin_user: str,
     # Phase 4: Wait for post-FIPS boot
     # ------------------------------------------------------------------
     if status == STATE_REBOOTING:
-        if not phase_wait_for_post_fips(ip, state, state_dir):
+        if not phase_wait_for_post_fips(ip, key_path, state, state_dir):
             return False
         status = state["status"]
 
@@ -925,7 +916,7 @@ def enable_fips(ip: str, key_path: Path | None, admin_user: str,
     # Phase 5: Set new admin password
     # ------------------------------------------------------------------
     if status == STATE_POST_FIPS_UP:
-        if not phase_set_admin_password(ip, new_password, state, state_dir):
+        if not phase_set_admin_password(ip, key_path, new_password, state, state_dir):
             return False
 
     LOGGER.info("=" * 60)

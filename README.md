@@ -86,9 +86,9 @@ pip install -r requirements.txt
 
 **MRT phase (Phases 2–3):** SSH as `ec2-user` using the same SSH key. This is hardcoded by AWS — the MRT grants access via the SSH key associated with the instance at launch.
 
-**Post-FIPS phase (Phase 4):** SSH as `admin` with password `paloalto` (the post-factory-reset default). Key-based auth is not possible here — AWS cloud-init does not re-inject SSH keys after a factory reset, so the `authorized_keys` file is gone.
+**Post-FIPS phase (Phase 4):** SSH as `admin` using the instance SSH key. AWS re-injects the key at boot even after a factory reset, so key auth works. Password auth (`admin`/`paloalto`) does not work on this platform.
 
-**Password change (Phase 5):** Connects with the `paloalto` default, enters configure mode, sets `--new-password`, and commits. If `--new-password` is omitted a secure random password is generated. The final password is saved in the state file and printed on completion.
+**Password change (Phase 5):** Connects via SSH key, enters configure mode, sets `--new-password`, and commits. If `--new-password` is omitted a secure random password is generated. The final password is saved in the state file and printed on completion.
 
 ### Arguments
 
