@@ -156,7 +156,19 @@ class FirewallSSHClient:
         LOGGER.error("Could not connect to %s after %d attempts", self.ip, max_retries)
         return False
 
-    def try_connect(self) -> bool:
+    def try_connect(self, suppress_errors: bool = False) -> bool:
+        """
+        Single connection attempt. Returns True on success, False otherwise.
+
+        Pass suppress_errors=True during polling loops where connection
+        failures are expected (e.g. post-FIPS boot) to silence the
+        paramiko.transport ERROR logs for 'Network is down' and
+        'Error reading SSH protocol banner'.
+        """
+        _pt = logging.getLogger("paramiko.transport")
+        _saved = _pt.level
+        if suppress_errors:
+            _pt.setLevel(logging.CRITICAL)
         try:
             c = paramiko.SSHClient()
             c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -165,6 +177,9 @@ class FirewallSSHClient:
             return True
         except Exception:
             return False
+        finally:
+            if suppress_errors:
+                _pt.setLevel(_saved)
 
     def invoke_shell(self) -> paramiko.Channel:
         chan = self._client.invoke_shell(width=SCREEN_WIDTH, height=SCREEN_HEIGHT)
@@ -687,7 +702,7 @@ def phase_wait_for_post_fips(ip: str, state: dict, state_dir: Path,
                     attempt, deadline - time.time())
 
         ssh = _post_fips_client(ip, state, key_path)
-        if ssh.try_connect():
+        if ssh.try_connect(suppress_errors=True):
             LOGGER.info("Post-FIPS firewall is reachable")
             try:
                 out = ssh.run_command("show system info | match operational-mode", timeout=15)
@@ -727,7 +742,7 @@ def detect_state(ip: str, state: dict, key_path: Path | None) -> str:
 
     if saved in (STATE_FIPS_SELECTED, STATE_FIPS_COMPLETE, STATE_REBOOTING):
         ssh = _post_fips_client(ip, state, key_path)
-        if ssh.try_connect():
+        if ssh.try_connect(suppress_errors=True):
             ssh.close()
             LOGGER.info("Post-FIPS firewall is up — marking DONE")
             return STATE_DONE
