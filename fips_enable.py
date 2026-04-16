@@ -388,6 +388,12 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
         if not _wait_for_in_channel(chan, ">", timeout=30):
             LOGGER.warning("Did not see CLI prompt — continuing anyway")
 
+        # Disable pager so show system info and subsequent commands don't
+        # block waiting for keystrokes to advance through paged output.
+        LOGGER.debug("send: set cli pager off")
+        chan.send("set cli pager off\n")
+        _wait_for_in_channel(chan, ">", timeout=15)
+
         # --- Introspect ---
         LOGGER.info("Running: show system info")
         chan.send("show system info\n")
