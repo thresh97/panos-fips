@@ -372,10 +372,15 @@ def save_state(state: dict, state_dir: Path):
 def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
                       password: str | None, state: dict, state_dir: Path) -> bool:
     """
-    SSH as the admin user, run 'show system info' to detect platform and
-    serial number, then issue 'debug system maintenance-mode'.
+    SSH as the admin user in two separate sessions:
+      Session 1: run 'show system info' to detect platform and serial.
+      Session 2: trigger 'debug system maintenance-mode' cleanly.
+
+    Keeping introspection and the maintenance-mode trigger in separate
+    sessions avoids any residual output, pager state, or buffering from
+    the show command polluting the confirmation-prompt interaction.
     """
-    LOGGER.info("Phase 1: Connecting to %s as %s", ip, admin_user)
+    LOGGER.info("Phase 1a: Introspecting %s as %s", ip, admin_user)
 
     ssh = FirewallSSHClient(ip, admin_user, key_path, password)
     if not ssh.connect(max_retries=15, delay=20):
@@ -388,13 +393,10 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
         if not _wait_for_in_channel(chan, ">", timeout=30):
             LOGGER.warning("Did not see CLI prompt — continuing anyway")
 
-        # Disable pager so show system info and subsequent commands don't
-        # block waiting for keystrokes to advance through paged output.
         LOGGER.debug("send: set cli pager off")
         chan.send("set cli pager off\n")
         _wait_for_in_channel(chan, ">", timeout=15)
 
-        # --- Introspect ---
         LOGGER.info("Running: show system info")
         chan.send("show system info\n")
         buf = ""
@@ -405,51 +407,66 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
                 buf += chan.recv(4096).decode(errors="replace")
                 last_recv = time.time()
             elif "hostname:" in buf and time.time() - last_recv > 1.0:
-                # 1 second of silence after output has started = command complete
                 break
             time.sleep(0.1)
+    finally:
+        ssh.close()
 
-        sysinfo = parse_sysinfo(buf)
-        LOGGER.debug("System info: %s", sysinfo)
+    sysinfo = parse_sysinfo(buf)
+    LOGGER.debug("System info: %s", sysinfo)
 
-        platform = detect_platform(sysinfo)
-        serial   = sysinfo.get("serial", "unknown")
-        device   = "Panorama" if sysinfo.get("family", "").lower() == "panorama" else "VM-Series"
-        vm_mode  = sysinfo.get("vm-mode", "hardware")
+    platform = detect_platform(sysinfo)
+    serial   = sysinfo.get("serial", "unknown")
+    device   = "Panorama" if sysinfo.get("family", "").lower() == "panorama" else "VM-Series"
+    vm_mode  = sysinfo.get("vm-mode", "hardware")
 
-        LOGGER.info("Platform: %s (%s)  Device: %s  Serial: %s",
-                    platform.upper(), vm_mode, device, serial)
+    LOGGER.info("Platform: %s (%s)  Device: %s  Serial: %s",
+                platform.upper(), vm_mode, device, serial)
 
-        if serial.lower() == "unknown" and platform in ("azure", "vmware", "hw"):
-            LOGGER.error(
-                "Serial number is unknown — the firewall must be licensed "
-                "before enabling FIPS-CC mode. The serial number is used as "
-                "the MRT 'maint' SSH password."
-            )
-            return False
+    if serial.lower() == "unknown" and platform in ("azure", "vmware", "hw"):
+        LOGGER.error(
+            "Serial number is unknown — the firewall must be licensed "
+            "before enabling FIPS-CC mode. The serial number is used as "
+            "the MRT 'maint' SSH password."
+        )
+        return False
 
-        state["platform"] = platform
-        state["serial"]   = serial
-        state["device"]   = device
-        save_state(state, state_dir)
+    state["platform"] = platform
+    state["serial"]   = serial
+    state["device"]   = device
+    save_state(state, state_dir)
 
-        # --- Trigger MRT ---
+    # --- Session 2: trigger maintenance mode ---
+    LOGGER.info("Phase 1b: Triggering maintenance mode on %s", ip)
+
+    ssh2 = FirewallSSHClient(ip, admin_user, key_path, password)
+    if not ssh2.connect(max_retries=5, delay=10):
+        LOGGER.error("Cannot reconnect to %s to trigger maintenance mode", ip)
+        return False
+
+    try:
+        chan2 = ssh2.invoke_shell()
+
+        if not _wait_for_in_channel(chan2, ">", timeout=30):
+            LOGGER.warning("Did not see CLI prompt on session 2 — continuing anyway")
+
         LOGGER.info("Sending: debug system maintenance-mode")
         LOGGER.debug("send: debug system maintenance-mode")
-        chan.send("debug system maintenance-mode\n")
+        chan2.send("debug system maintenance-mode\n")
 
-        if not _wait_for_in_channel(chan, "y or n", timeout=15):
+        # PAN-OS prompts: "Do you want to continue? (y or n)"
+        if not _wait_for_in_channel(chan2, "y or n", timeout=30):
             LOGGER.warning("Did not see confirmation prompt — sending y anyway")
         LOGGER.debug("send: y")
-        chan.send("y\n")
+        chan2.send("y\n")
 
-        _wait_for_channel_close(chan, timeout=30)
+        _wait_for_channel_close(chan2, timeout=30)
         LOGGER.info("Maintenance mode triggered. Firewall will reboot in ~2-3 minutes.")
 
     except Exception as exc:
         LOGGER.debug("SSH session ended (expected during reboot): %s", exc)
     finally:
-        ssh.close()
+        ssh2.close()
 
     state["status"] = STATE_MRT_TRIGGERED
     state["mrt_triggered_at"] = time.time()
@@ -846,19 +863,23 @@ WARNING: Enabling FIPS-CC mode performs a full factory reset.
         help="Directory for state files (default: current directory)",
     )
     parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging — full SSH and MRT screen output",
+        "-d",
+        action="count",
+        default=0,
+        dest="debug",
+        help="-d: channel I/O debug (recv/send, MRT screen dumps); "
+             "-dd: also SSH protocol debug (paramiko.transport key exchange, auth)",
     )
 
     args = parser.parse_args()
 
+    log_level = logging.DEBUG if args.debug >= 1 else logging.INFO
     logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.INFO,
+        level=log_level,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    if args.debug:
+    if args.debug >= 2:
         logging.getLogger("paramiko.transport").setLevel(logging.DEBUG)
     else:
         logging.getLogger("paramiko").setLevel(logging.WARNING)
