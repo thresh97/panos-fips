@@ -12,7 +12,7 @@ Enabling FIPS-CC mode on a VM-Series firewall is not a normal configuration chan
 
 The workflow involves several obstacles that make automation non-trivial:
 
-- **SSH credentials change mid-operation.** After triggering maintenance mode, the firewall reboots and the MRT becomes accessible via SSH using cloud-specific credentials (`ec2-user` on AWS, `gcp-user` on GCP, deployment credentials on Azure) rather than the usual `admin` account.
+- **SSH credentials change mid-operation.** After triggering maintenance mode, the firewall reboots and the MRT becomes accessible via SSH using cloud-specific credentials (`ec2-user` on AWS, `gcp-user` on GCP, `maint` with the device serial number as the password on Azure) rather than the usual `admin` account.
 - **Enabling FIPS-CC triggers a full factory reset.** All configuration and credentials are permanently erased. The default admin credentials reset to `admin`/`paloalto` post-FIPS.
 - **The MRT is a curses TUI.** Navigation is done with arrow keys, and menu items are highlighted with reverse-video — not plain text prompts. This script uses [pyte](https://github.com/selectel/pyte) to render the raw ANSI/VT100 stream into a virtual terminal so that highlighted items can be reliably detected regardless of screen redraws.
 - **The factory reset can take several minutes.** If the SSH connection drops between the "Success" confirmation and the final "Reboot" selection, the script must reconnect and complete the reboot — or risk the firewall sitting at a completed-but-not-rebooted state indefinitely.
