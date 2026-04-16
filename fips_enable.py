@@ -393,11 +393,14 @@ def phase_trigger_mrt(ip: str, admin_user: str, key_path: Path | None,
         chan.send("show system info\n")
         buf = ""
         deadline = time.time() + 20
+        last_recv = time.time()
         while time.time() < deadline:
             if chan.recv_ready():
                 buf += chan.recv(4096).decode(errors="replace")
-                if buf.count(">") >= 2:
-                    break
+                last_recv = time.time()
+            elif "hostname:" in buf and time.time() - last_recv > 1.0:
+                # 1 second of silence after output has started = command complete
+                break
             time.sleep(0.1)
 
         sysinfo = parse_sysinfo(buf)
