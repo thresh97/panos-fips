@@ -101,7 +101,7 @@ def detect_platform(sysinfo: dict) -> str:
         return "aws"
     if "azure" in vm_mode or "microsoft" in vm_mode or cpuid.startswith("azr:"):
         return "azure"
-    if "google" in vm_mode or "gcp" in vm_mode or "gce" in vm_mode or cpuid.startswith("gce:"):
+    if "google" in vm_mode or "gcp" in vm_mode or "gce" in vm_mode or cpuid.startswith("gce:") or cpuid.startswith("gcp:"):
         return "gcp"
     if "vmware" in vm_mode or "esxi" in vm_mode or "kvm" in vm_mode:
         return "vmware"
