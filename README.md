@@ -187,6 +187,7 @@ python3 azure_fips_enable.py "$MGMT_IP"
 | Platform | Version | MRT access | Status |
 |---|---|---|---|
 | AWS VM-Series | 11.1.10-h22 | `ec2-user` + SSH key | ✅ Validated |
+| AWS Panorama | 11.2.8 | `ec2-user` + SSH key | ✅ Validated |
 | Azure VM-Series | 11.1.6-h12 | `maint` + serial (firewall must be licensed) | ✅ Validated |
 | GCP VM-Series | 11.1.6-h7 | `gcp-user` + SSH key | ✅ Validated |
 
