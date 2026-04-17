@@ -204,14 +204,14 @@ python3 fips_enable.py panadmin@"$MGMT_IP"
 |---|---|---|---|
 | AWS VM-Series | 11.1.10-h22 | `ec2-user` + SSH key | ✅ Validated |
 | AWS Panorama | 11.2.8 | `ec2-user` + SSH key | ✅ Validated |
-| Azure VM-Series | 11.1.6-h12 | `maint` + serial (firewall must be licensed) | ✅ Validated |
+| Azure VM-Series | 11.1.6-h12 | `maint` + serial (must be licensed) | ✅ Validated |
 | GCP VM-Series | 11.1.6-h7 | `gcp-user` + SSH key | ✅ Validated |
+| GCP Panorama | 11.2.6 | `gcp-user` + SSH key (unlicensed works) | ✅ Validated |
 
 ## Planned / Not Validated
 
 | Platform | MRT access | Notes |
 |---|---|---|
-| GCP Panorama | `gcp-user` + SSH key | Untested |
 | Hardware NGFW | `maint` + serial (passed via `--serial`) | Not yet implemented |
 | M-Series / VMware Panorama | `maint` + serial (passed via `--serial`) | Not yet implemented |
 
