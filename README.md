@@ -66,9 +66,8 @@ Progress is tracked in a local JSON state file (`ngfw_fips_<ip>.json`). The scri
 ## Prerequisites
 
 - **Python:** 3.10+
-- **PAN-OS:** Tested with VM-Series on PAN-OS 11.x
-- **SSH key:** The same key associated with the EC2 instance at launch time is used for both the admin phase and the MRT `ec2-user` phase.
-- **Network access:** Management IP must be reachable from the machine running this script throughout all phases.
+- **PAN-OS:** Tested on VM-Series and Panorama, PAN-OS 11.x
+- **Network access:** Management IP must be reachable throughout all phases.
 
 ```bash
 python3 -m venv venv
@@ -80,42 +79,39 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Authentication
-
-**Admin phase (Phase 1):** SSH as `admin` using the instance SSH key. A password can be provided via `--admin-password` or the `NGFW_ADMIN_PASSWORD` environment variable if key auth is not configured for the admin account.
-
-**MRT phase (Phases 2–3):** SSH as `ec2-user` using the same SSH key. This is hardcoded by AWS — the MRT grants access via the SSH key associated with the instance at launch.
-
-**Post-FIPS phase (Phase 4):** SSH as `admin` using the instance SSH key. AWS re-injects the key at boot even after a factory reset, so key auth works. Password auth (`admin`/`paloalto`) does not work on this platform.
-
-The firewall is left in a factory-default, unlicensed state — the correct state for quiescing and capturing a custom AMI via [vmseries-custom](https://github.com/thresh97/vmseries-custom).
+`fips_enable.py` connects as `[user@]host`, runs `show system info` to detect the platform and serial number, then drives the MRT with the appropriate credentials automatically.
 
 ### Arguments
 
 | Argument | Default | Description |
 |---|---|---|
-| `ip` | *(required)* | Management IP address of the firewall |
-| `--ssh-key` | `~/.ssh/id_rsa` | Path to SSH private key associated with the EC2 instance |
-| `--admin-user` | `admin` | Admin username for the initial SSH session |
-| `--admin-password` | *(env: `NGFW_ADMIN_PASSWORD`)* | Admin password if not using key auth for Phase 1 |
+| `[user@]host` | *(required)* | Admin username and management IP. Username defaults to `admin` if omitted. |
+| `--key` | `~/.ssh/id_rsa` | SSH private key path |
+| `-p` | — | Prompt for admin password instead of using SSH key |
 | `--state-dir` | `.` | Directory for state files |
-| `--debug` | `false` | Verbose logging with full screen dumps at each MRT navigation step |
+| `-d` | — | Channel I/O debug — recv/send data and MRT screen dumps |
+| `-dd` | — | Also enable SSH protocol debug (paramiko.transport) |
 
 ### Examples
 
 ```bash
-# Basic usage
-python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
+# Basic usage — platform and MRT credentials detected automatically
+python3 fips_enable.py admin@10.0.0.100
 
-# With debug output (recommended for first run — shows full MRT screen at each step)
-python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem --debug
+# Custom SSH key
+python3 fips_enable.py panadmin@10.0.0.100 --key ~/.ssh/my-key.pem
 
-# Admin account uses password instead of key (Phase 1 only)
-export NGFW_ADMIN_PASSWORD='YourAdminPassword'
-python3 aws_fips_enable.py 10.0.0.100 --ssh-key ~/.ssh/my-key.pem
+# Password auth for Phase 1 (prompted interactively)
+python3 fips_enable.py admin@10.0.0.100 -p
+
+# Debug MRT screen output
+python3 fips_enable.py admin@10.0.0.100 -d
+
+# Debug including SSH protocol
+python3 fips_enable.py admin@10.0.0.100 -dd
 ```
 
-The script is fully idempotent. Re-running the same command on a firewall that is already in `done` state exits immediately with no action.
+The script is fully idempotent. Re-running on a firewall already in `done` state exits immediately with no action.
 
 ---
 
@@ -177,7 +173,7 @@ python3 fips_enable.py admin@"$(terraform -chdir=../panorama-create/aws output -
 
 ## Deploying a Target Instance (Azure)
 
-The firewall must be licensed before running `azure_fips_enable.py` — the serial number assigned at licensing is used automatically as the `maint` SSH password for MRT access (Phases 2-3).
+The firewall must be licensed before running `fips_enable.py` on Azure — the serial number is read automatically and used as the `maint` SSH password for MRT access.
 
 ```bash
 # Deploy and license a VM-Series instance
@@ -197,7 +193,7 @@ MGMT_IP=$(jq -r '.management_public_ip' ./*-state.json)
 
 # Enable FIPS-CC
 cd ../../panos-fips
-python3 azure_fips_enable.py "$MGMT_IP"
+python3 fips_enable.py panadmin@"$MGMT_IP"
 ```
 
 ---
