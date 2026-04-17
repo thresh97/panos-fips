@@ -201,7 +201,7 @@ python3 azure_fips_enable.py "$MGMT_IP"
 
 ### Azure Panorama — MRT SSH not resolved
 
-Azure Panorama MRT SSH access via `maint` + serial has not been successfully validated. The serial console path works manually but cannot be driven via SSH automation. Since FIPS-CC mode is not required for Panorama, this is not currently blocking.
+Azure Panorama MRT SSH access via `maint` + serial has not been successfully validated. The serial console path works manually but cannot be driven via SSH automation.
 
 **TODO:** Add FIPS-CC enablement as an optional post-upgrade step in [vmseries-custom](https://github.com/thresh97/vmseries-custom)'s `create-custom-ami` workflow, so a specific PAN-OS version not available in the Marketplace can be built into a FIPS-CC golden image.
 
