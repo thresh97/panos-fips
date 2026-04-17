@@ -133,6 +133,8 @@ For background on post-FIPS configuration requirements, see [FIPS-CC Security Fu
 
 ## Deploying a Target Instance (AWS)
 
+### VM-Series
+
 If you need a fresh VM-Series instance to enable FIPS-CC on, [vmseries-custom](https://github.com/thresh97/vmseries-custom) can deploy one and hand off directly to this script.
 
 ```bash
@@ -150,7 +152,25 @@ MGMT_IP=$(jq -r '.management_public_ip' ./*-state.json)
 
 # Enable FIPS-CC
 cd ../../panos-fips
-python3 aws_fips_enable.py "$MGMT_IP" --ssh-key ~/.ssh/my-key.pem
+python3 fips_enable.py admin@"$MGMT_IP"
+```
+
+### Panorama
+
+[panorama-create](https://github.com/thresh97/panorama-create) deploys a Panorama instance on AWS. Run `panorama_init.py` to provision it before enabling FIPS-CC.
+
+```bash
+# Deploy Panorama
+cd panorama-create/aws
+terraform apply
+
+# Provision Panorama (sets admin password, applies serial, etc.)
+cd ../../panorama-init
+python3 panorama_init.py "$(terraform -chdir=../panorama-create/aws output -raw panorama_public_ip)"
+
+# Enable FIPS-CC
+cd ../panos-fips
+python3 fips_enable.py admin@"$(terraform -chdir=../panorama-create/aws output -raw panorama_public_ip)"
 ```
 
 ---
