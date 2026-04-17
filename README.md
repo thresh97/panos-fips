@@ -2,7 +2,7 @@
 
 > **These scripts do not deploy the firewall or Panorama.** They assume the device is already running and reachable at the IP address you provide.
 
-A Python CLI tool for enabling FIPS-CC mode on Palo Alto Networks VM-Series firewalls deployed in the public cloud. Currently supports AWS, with GCP and Azure planned.
+A Python CLI tool for enabling FIPS-CC mode on Palo Alto Networks VM-Series firewalls deployed in the public cloud. `fips_enable.py` auto-detects platform from `show system info` and drives the appropriate MRT credentials.
 
 ---
 
@@ -182,18 +182,27 @@ python3 azure_fips_enable.py "$MGMT_IP"
 
 ---
 
-## Planned
+## Validated
 
-The MRT credential model is determined by where the device is running, not whether it is a firewall or Panorama. The planned scripts cover both form factors accordingly.
+| Platform | Version | MRT access | Status |
+|---|---|---|---|
+| AWS VM-Series | 11.1.10-h22 | `ec2-user` + SSH key | ✅ Validated |
+| Azure VM-Series | 11.1.6-h12 | `maint` + serial (firewall must be licensed) | ✅ Validated |
+| GCP VM-Series | 11.1.6-h7 | `gcp-user` + SSH key | ✅ Validated |
 
-| Script | Covers |
-|---|---|
-| `aws_fips_enable.py` *(current)* | VM-Series on AWS, Panorama virtual on AWS |
-| `azure_fips_enable.py` *(current)* | VM-Series on Azure, Panorama virtual on Azure — firewall must be licensed first; serial number is read automatically and used as `maint` password for MRT access; SSH key required for post-FIPS access |
-| `gcp_fips_enable.py` | VM-Series on GCP, Panorama virtual on GCP — `gcp-user` + SSH key for MRT |
-| `hw_fips_enable.py` | Hardware NGFW, M-Series Panorama, Panorama virtual on VMware/KVM — MRT SSH uses `maint` as username and the device serial number as password |
+## Planned / Not Validated
 
-**TODO:** Add FIPS-CC enablement as an optional post-upgrade step in [vmseries-custom](https://github.com/thresh97/vmseries-custom)'s `create-custom-ami` workflow. This would allow building a golden AMI at a specific PAN-OS version (not available in the Marketplace) with FIPS-CC mode already enabled — deploy → upgrade PAN-OS → enable FIPS-CC → capture AMI.
+| Platform | MRT access | Notes |
+|---|---|---|
+| GCP Panorama | `gcp-user` + SSH key | Untested |
+| Hardware NGFW | `maint` + serial (passed via `--serial`) | Not yet implemented |
+| M-Series / VMware Panorama | `maint` + serial (passed via `--serial`) | Not yet implemented |
+
+### Azure Panorama — MRT SSH not resolved
+
+Azure Panorama MRT SSH access via `maint` + serial has not been successfully validated. The serial console path works manually but cannot be driven via SSH automation. Since FIPS-CC mode is not required for Panorama, this is not currently blocking.
+
+**TODO:** Add FIPS-CC enablement as an optional post-upgrade step in [vmseries-custom](https://github.com/thresh97/vmseries-custom)'s `create-custom-ami` workflow, so a specific PAN-OS version not available in the Marketplace can be built into a FIPS-CC golden image.
 
 ---
 
